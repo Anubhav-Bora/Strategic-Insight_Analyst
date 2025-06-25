@@ -8,48 +8,42 @@ import (
 	"net/http"
 	"strings"
 
-	"strategic-insight-analyst/utils" // ✅ Replace this with your actual module path
+	"strategic-insight-analyst/utils" // Replace with your actual path
 
 	firebase "firebase.google.com/go/v4"
 )
 
-// Define a custom type for context key to avoid collisions
 type contextKey string
 
 const userIDKey contextKey = "userID"
 
-// AuthMiddleware verifies Firebase ID token and checks if user exists in DB
 func AuthMiddleware(app *firebase.App, db *sql.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Allow public routes without authentication
 			if r.URL.Path == "/api/login" || r.URL.Path == "/api/register" {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			// Get Authorization header
 			authHeader := r.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {
-				http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
+				http.Error(w, "Missing or invalid Authorization header", http.StatusUnauthorized)
 				return
 			}
 
-			// Extract the token
-			idToken := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+			idToken := strings.TrimPrefix(authHeader, "Bearer ")
+			idToken = strings.TrimSpace(idToken)
 			if idToken == "" {
 				http.Error(w, "ID token missing", http.StatusUnauthorized)
 				return
 			}
 
-			// Verify the token using Firebase
 			token, err := utils.VerifyIDToken(r.Context(), app, idToken)
 			if err != nil {
-				http.Error(w, fmt.Sprintf("Invalid ID token: %v", err), http.StatusUnauthorized)
+				http.Error(w, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
 				return
 			}
 
-			// Check if user exists in the database
 			var userID string
 			err = db.QueryRowContext(r.Context(), "SELECT id FROM users WHERE id = $1", token.UID).Scan(&userID)
 			if err != nil {
@@ -62,8 +56,7 @@ func AuthMiddleware(app *firebase.App, db *sql.DB) func(http.Handler) http.Handl
 				return
 			}
 
-			// Add user ID to the request context
-			ctx := context.WithValue(r.Context(), userIDKey, token.UID)
+			ctx := context.WithValue(r.Context(), userIDKey, userID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
