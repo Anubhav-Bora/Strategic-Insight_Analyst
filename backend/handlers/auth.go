@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -56,6 +57,7 @@ func AuthMiddleware(app *firebase.App, db *sql.DB) func(http.Handler) http.Handl
 					http.Error(w, "User not registered", http.StatusUnauthorized)
 					return
 				}
+				log.Printf("Database error: %v", err)
 				http.Error(w, "Database error", http.StatusInternalServerError)
 				return
 			}

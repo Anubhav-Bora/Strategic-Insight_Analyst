@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -91,12 +92,14 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 		VALUES ($1, $2, $3, $4, $5)`,
 		docID, userID, handler.Filename, uploadPath, time.Now())
 	if err != nil {
+		log.Printf("Database error (saving document): %v", err)
 		http.Error(w, "Error saving document to database", http.StatusInternalServerError)
 		return
 	}
 
 	err = ds.saveDocumentChunks(ctx, docID, textContent)
 	if err != nil {
+		log.Printf("Database error (saving chunks): %v", err)
 		http.Error(w, "Error saving document chunks", http.StatusInternalServerError)
 		return
 	}
@@ -166,6 +169,7 @@ func (ds *DocumentService) ListDocuments(w http.ResponseWriter, r *http.Request)
 		WHERE user_id = $1
 		ORDER BY uploaded_at DESC`, userID)
 	if err != nil {
+		log.Printf("Database error (listing documents): %v", err)
 		http.Error(w, "Error querying documents", http.StatusInternalServerError)
 		return
 	}
@@ -176,6 +180,7 @@ func (ds *DocumentService) ListDocuments(w http.ResponseWriter, r *http.Request)
 		var doc Document
 		err := rows.Scan(&doc.ID, &doc.FileName, &doc.StorageURL, &doc.UploadedAt)
 		if err != nil {
+			log.Printf("Database error (scanning document row): %v", err)
 			http.Error(w, "Error scanning document row", http.StatusInternalServerError)
 			return
 		}
@@ -204,6 +209,7 @@ func (ds *DocumentService) GetDocument(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Document not found", http.StatusNotFound)
 			return
 		}
+		log.Printf("Database error (retrieving document): %v", err)
 		http.Error(w, "Error retrieving document", http.StatusInternalServerError)
 		return
 	}
@@ -226,6 +232,7 @@ func (ds *DocumentService) DeleteDocument(w http.ResponseWriter, r *http.Request
 			http.Error(w, "Document not found", http.StatusNotFound)
 			return
 		}
+		log.Printf("Database error (retrieving document for deletion): %v", err)
 		http.Error(w, "Error retrieving document for deletion", http.StatusInternalServerError)
 		return
 	}
@@ -235,6 +242,7 @@ func (ds *DocumentService) DeleteDocument(w http.ResponseWriter, r *http.Request
 
 	_, err = ds.db.ExecContext(ctx, "DELETE FROM documents WHERE id = $1 AND user_id = $2", docID, userID)
 	if err != nil {
+		log.Printf("Database error (deleting document): %v", err)
 		http.Error(w, "Error deleting document from database", http.StatusInternalServerError)
 		return
 	}
