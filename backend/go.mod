@@ -3,7 +3,7 @@ module strategic-insight-analyst
 go 1.24.2
 
 require (
-	cloud.google.com/go/storage v1.55.0
+	cloud.google.com/go/storage v1.55.0 // indirect
 	firebase.google.com/go/v4 v4.16.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1

@@ -38,8 +38,8 @@ type GeminiRequest struct {
 }
 
 type GeminiContent struct {
-	Role  string         `json:"role,omitempty"`
-	Parts []GeminiPart   `json:"parts"`
+	Role  string       `json:"role,omitempty"`
+	Parts []GeminiPart `json:"parts"`
 }
 
 type GeminiPart struct {
@@ -318,7 +318,7 @@ func (ls *LLMService) callGeminiAPI(prompt string) (string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Gemini API returned status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var geminiResp GeminiResponse
@@ -365,7 +365,7 @@ func (ls *LLMService) callGeminiChatAPI(messages []ChatMessage) (string, error) 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Gemini API returned status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var geminiResp GeminiResponse
