@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -92,6 +93,8 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 		}
 		textContent = string(contentBytes)
 	}
+
+	textContent = strings.ReplaceAll(textContent, "\x00", "")
 
 	docID := uuid.New().String()
 	uploadedAt := time.Now()
