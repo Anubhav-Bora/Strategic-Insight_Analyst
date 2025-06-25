@@ -6,28 +6,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
-	"cloud.google.com/go/storage"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"rsc.io/pdf"
 )
 
 type DocumentService struct {
-	db            *sql.DB
-	storageClient *storage.Client
+	db *sql.DB
 }
 
-func NewDocumentService(db *sql.DB, storageClient *storage.Client) *DocumentService {
-	return &DocumentService{
-		db:            db,
-		storageClient: storageClient,
-	}
+func NewDocumentService(db *sql.DB) *DocumentService {
+	return &DocumentService{db: db}
 }
 
 type Document struct {
@@ -42,14 +36,12 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 	ctx := r.Context()
 	userID := ctx.Value("userID").(string)
 
-	// Parse multipart form (max 10MB file size)
 	err := r.ParseMultipartForm(10 << 20)
 	if err != nil {
 		http.Error(w, "Unable to parse form", http.StatusBadRequest)
 		return
 	}
 
-	// Get file from form data
 	file, handler, err := r.FormFile("document")
 	if err != nil {
 		http.Error(w, "Error retrieving the file", http.StatusBadRequest)
@@ -57,102 +49,62 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 	}
 	defer file.Close()
 
-	// Generate unique filename
-	ext := filepath.Ext(handler.Filename)
-	newFileName := uuid.New().String() + ext
-
-	// Upload to Google Cloud Storage
-	bucketName := os.Getenv("GCS_BUCKET")
-	bucket := ds.storageClient.Bucket(bucketName)
-	obj := bucket.Object(newFileName)
-	wc := obj.NewWriter(ctx)
-
-	if _, err = io.Copy(wc, file); err != nil {
-		http.Error(w, "Error uploading file to storage", http.StatusInternalServerError)
-		return
+	fileExt := filepath.Ext(handler.Filename)
+	newFileName := uuid.New().String() + fileExt
+	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
+		os.Mkdir("uploads", 0755)
 	}
+	uploadPath := filepath.Join("uploads", newFileName)
 
-	if err := wc.Close(); err != nil {
-		http.Error(w, "Error closing storage writer", http.StatusInternalServerError)
-		return
-	}
-
-	// Set ACL to make the file publicly readable
-	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
-		http.Error(w, "Error setting file ACL", http.StatusInternalServerError)
-		return
-	}
-
-	// Get public URL
-	attrs, err := obj.Attrs(ctx)
+	out, err := os.Create(uploadPath)
 	if err != nil {
-		http.Error(w, "Error getting file attributes", http.StatusInternalServerError)
+		http.Error(w, "Unable to save file", http.StatusInternalServerError)
+		return
+	}
+	defer out.Close()
+	_, err = io.Copy(out, file)
+	if err != nil {
+		http.Error(w, "Unable to save file", http.StatusInternalServerError)
 		return
 	}
 
-	// Extract text from document
+	// Extract text
 	var textContent string
-	if ext == ".pdf" {
-		// Create temp file for PDF processing
-		tempFilePath := filepath.Join(os.TempDir(), newFileName)
-		tempFile, err := os.Create(tempFilePath)
+	if fileExt == ".pdf" {
+		textContent, err = extractTextFromPDF(uploadPath)
 		if err != nil {
-			http.Error(w, "Error creating temp file", http.StatusInternalServerError)
+			http.Error(w, "Failed to extract text", http.StatusInternalServerError)
 			return
 		}
-		defer os.Remove(tempFilePath)
-
-		// Reset file reader to beginning
-		if _, err := file.Seek(0, 0); err != nil {
-			http.Error(w, "Error resetting file reader", http.StatusInternalServerError)
-			return
-		}
-
-		if _, err := io.Copy(tempFile, file); err != nil {
-			http.Error(w, "Error writing to temp file", http.StatusInternalServerError)
-			return
-		}
-		tempFile.Close()
-
-		// Extract text from PDF
-		textContent, err = extractTextFromPDF(tempFilePath)
+	} else if fileExt == ".txt" {
+		contentBytes, err := os.ReadFile(uploadPath)
 		if err != nil {
-			http.Error(w, "Error extracting text from PDF", http.StatusInternalServerError)
-			return
-		}
-	} else if ext == ".txt" {
-		// For text files, just read the content
-		contentBytes, err := io.ReadAll(file)
-		if err != nil {
-			http.Error(w, "Error reading text file", http.StatusInternalServerError)
+			http.Error(w, "Failed to read text file", http.StatusInternalServerError)
 			return
 		}
 		textContent = string(contentBytes)
 	}
 
-	// Save document metadata to database
 	docID := uuid.New().String()
 	_, err = ds.db.ExecContext(ctx, `
 		INSERT INTO documents (id, user_id, file_name, storage_path, uploaded_at)
 		VALUES ($1, $2, $3, $4, $5)`,
-		docID, userID, handler.Filename, newFileName, time.Now())
+		docID, userID, handler.Filename, uploadPath, time.Now())
 	if err != nil {
 		http.Error(w, "Error saving document to database", http.StatusInternalServerError)
 		return
 	}
 
-	// Chunk the text content and save to database
 	err = ds.saveDocumentChunks(ctx, docID, textContent)
 	if err != nil {
 		http.Error(w, "Error saving document chunks", http.StatusInternalServerError)
 		return
 	}
 
-	// Return success response
 	response := map[string]interface{}{
 		"id":         docID,
 		"fileName":   handler.Filename,
-		"storageUrl": attrs.MediaLink,
+		"storageUrl": uploadPath,
 		"uploadedAt": time.Now(),
 	}
 
@@ -161,10 +113,9 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 }
 
 func (ds *DocumentService) saveDocumentChunks(ctx context.Context, documentID string, content string) error {
-	// Split content into chunks of ~2000 characters (adjust based on your needs)
 	chunkSize := 2000
 	length := len(content)
-	numChunks := (length + chunkSize - 1) / chunkSize // Round up division
+	numChunks := (length + chunkSize - 1) / chunkSize
 
 	for i := 0; i < numChunks; i++ {
 		start := i * chunkSize
@@ -267,7 +218,6 @@ func (ds *DocumentService) DeleteDocument(w http.ResponseWriter, r *http.Request
 	vars := mux.Vars(r)
 	docID := vars["id"]
 
-	// First get the storage path
 	var storagePath string
 	err := ds.db.QueryRowContext(ctx, `
 		SELECT storage_path FROM documents WHERE id = $1 AND user_id = $2`, docID, userID).Scan(&storagePath)
@@ -280,16 +230,9 @@ func (ds *DocumentService) DeleteDocument(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Delete from storage
-	bucketName := os.Getenv("GCS_BUCKET")
-	bucket := ds.storageClient.Bucket(bucketName)
-	obj := bucket.Object(storagePath)
-	if err := obj.Delete(ctx); err != nil {
-		log.Printf("Warning: failed to delete file from storage: %v", err)
-		// Continue with database deletion even if storage deletion fails
-	}
+	// Delete file from local storage
+	_ = os.Remove(storagePath)
 
-	// Delete from database (cascade will delete chunks and chat history)
 	_, err = ds.db.ExecContext(ctx, "DELETE FROM documents WHERE id = $1 AND user_id = $2", docID, userID)
 	if err != nil {
 		http.Error(w, "Error deleting document from database", http.StatusInternalServerError)

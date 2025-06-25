@@ -1,27 +1,21 @@
 package utils
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 
-	"cloud.google.com/go/storage"
 	_ "github.com/lib/pq"
-	"google.golang.org/api/option"
 )
 
-var dbConnection *sql.DB
+var dbConnection *sql.DB // Changed from sql.DB to *sql.DB
 
-func InitDB() (*sql.DB, error) {
-	connStr := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		GetEnv("DB_HOST", "localhost"),
-		GetEnv("DB_PORT", "5432"),
-		GetEnv("DB_USER", "postgres"),
-		GetEnv("DB_PASSWORD", "postgres"),
-		GetEnv("DB_NAME", "insight_analyst"),
-	)
+func InitDB() (*sql.DB, error) { // Changed return type to *sql.DB
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		return nil, fmt.Errorf("DATABASE_URL not set in .env")
+	}
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
@@ -34,7 +28,7 @@ func InitDB() (*sql.DB, error) {
 	}
 
 	dbConnection = db
-	log.Println("Successfully connected to database")
+	log.Println("✅ Connected to Neon PostgreSQL database")
 	return db, nil
 }
 
@@ -43,13 +37,4 @@ func GetDBConnection() (*sql.DB, error) {
 		return nil, fmt.Errorf("database connection not initialized")
 	}
 	return dbConnection, nil
-}
-
-func InitStorage() (*storage.Client, error) {
-	ctx := context.Background()
-	client, err := storage.NewClient(ctx, option.WithCredentialsJSON([]byte(GetEnv("GOOGLE_APPLICATION_CREDENTIALS", ""))))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage client: %v", err)
-	}
-	return client, nil
 }

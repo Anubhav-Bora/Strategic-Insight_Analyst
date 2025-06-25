@@ -32,12 +32,3 @@ func VerifyIDToken(ctx context.Context, app *firebase.App, idToken string) (*aut
 	}
 	return token, nil
 }
-
-// Get Firebase Auth Client (used in Login/Register)
-func GetFirebaseAuthClient(ctx context.Context) (*auth.Client, error) {
-	app, err := InitFirebase()
-	if err != nil {
-		return nil, err
-	}
-	return app.Auth(ctx)
-}
