@@ -14,6 +14,8 @@ require (
 	rsc.io/pdf v0.1.1
 )
 
+require github.com/supabase-community/storage-go v0.7.0
+
 require (
 	cel.dev/expr v0.23.1 // indirect
 	cloud.google.com/go v0.121.1 // indirect

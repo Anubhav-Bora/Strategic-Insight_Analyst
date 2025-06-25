@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -13,9 +14,18 @@ import (
 	"strings"
 	"time"
 
+	"strategic-insight-analyst/utils"
+
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	storage "github.com/supabase-community/storage-go"
 	"rsc.io/pdf"
+)
+
+var (
+	supabaseURL    = utils.GetEnv("SUPABASE_URL", "")
+	supabaseKey    = utils.GetEnv("SUPABASE_SERVICE_ROLE_KEY", "")
+	supabaseBucket = utils.GetEnv("SUPABASE_BUCKET", "")
 )
 
 type DocumentService struct {
@@ -59,46 +69,61 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 	fileExt := filepath.Ext(handler.Filename)
 	newFileName := uuid.New().String() + fileExt
 
-	// Ensure uploads directory exists
-	if err := os.MkdirAll("uploads", 0755); err != nil {
-		http.Error(w, "Failed to create upload directory", http.StatusInternalServerError)
+	// Read file into buffer
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, file); err != nil {
+		http.Error(w, "Unable to read file", http.StatusInternalServerError)
 		return
 	}
 
-	uploadPath := filepath.Join("uploads", newFileName)
-	out, err := os.Create(uploadPath)
+	// Upload to Supabase Storage
+	client := storage.NewClient(supabaseURL+"/storage/v1", supabaseKey, nil)
+	uploadPath := "documents/" + newFileName
+
+	_, err = client.UploadFile(supabaseBucket, uploadPath, &buf)
 	if err != nil {
-		http.Error(w, "Unable to save file", http.StatusInternalServerError)
+		log.Printf("Supabase upload error: %v", err)
+		http.Error(w, "Failed to upload to Supabase Storage", http.StatusInternalServerError)
 		return
 	}
-	defer out.Close()
 
-	if _, err = io.Copy(out, file); err != nil {
-		http.Error(w, "Unable to save file", http.StatusInternalServerError)
+	// Download the file from Supabase Storage
+	downloaded, err := client.DownloadFile(supabaseBucket, uploadPath)
+	if err != nil {
+		log.Printf("Supabase download error: %v", err)
+		http.Error(w, "Failed to download file from Supabase Storage", http.StatusInternalServerError)
 		return
 	}
 
 	var textContent string
 	if fileExt == ".pdf" {
-		textContent, err = extractTextFromPDF(uploadPath)
+		// Save the downloaded file to a temp file for PDF processing
+		tmpFile, err := os.CreateTemp("", "*.pdf")
+		if err != nil {
+			http.Error(w, "Failed to create temp file", http.StatusInternalServerError)
+			return
+		}
+		defer os.Remove(tmpFile.Name())
+		if _, err := tmpFile.Write(downloaded); err != nil {
+			http.Error(w, "Failed to write temp file", http.StatusInternalServerError)
+			return
+		}
+		tmpFile.Close()
+		textContent, err = extractTextFromPDF(tmpFile.Name())
 		if err != nil {
 			http.Error(w, "Failed to extract text from PDF", http.StatusInternalServerError)
 			return
 		}
 	} else if fileExt == ".txt" {
-		contentBytes, err := os.ReadFile(uploadPath)
-		if err != nil {
-			http.Error(w, "Failed to read text file", http.StatusInternalServerError)
-			return
-		}
-		textContent = string(contentBytes)
+		// Read the text file directly from the downloaded bytes
+		textContent = string(downloaded)
 	}
-
 	textContent = strings.ReplaceAll(textContent, "\x00", "")
 
 	docID := uuid.New().String()
 	uploadedAt := time.Now()
 
+	// Store Supabase path in DB
 	_, err = ds.db.ExecContext(ctx, `
 		INSERT INTO documents (id, user_id, file_name, storage_path, uploaded_at)
 		VALUES ($1, $2, $3, $4, $5)`,
@@ -109,10 +134,12 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := ds.saveDocumentChunks(ctx, docID, textContent); err != nil {
-		log.Printf("Database error (saving chunks): %v", err)
-		http.Error(w, "Error saving document chunks", http.StatusInternalServerError)
-		return
+	if textContent != "" {
+		if err := ds.saveDocumentChunks(ctx, docID, textContent); err != nil {
+			log.Printf("Database error (saving chunks): %v", err)
+			http.Error(w, "Error saving document chunks", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	response := Document{
@@ -260,7 +287,12 @@ func (ds *DocumentService) DeleteDocument(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	_ = os.Remove(storagePath)
+	client := storage.NewClient(supabaseURL+"/storage/v1", supabaseKey, nil)
+	_, err = client.RemoveFile(supabaseBucket, []string{storagePath})
+	if err != nil {
+		log.Printf("Supabase delete error: %v", err)
+		// Optionally, handle error but still delete DB record
+	}
 
 	_, err = ds.db.ExecContext(ctx, "DELETE FROM documents WHERE id = $1 AND user_id = $2", docID, userID)
 	if err != nil {
