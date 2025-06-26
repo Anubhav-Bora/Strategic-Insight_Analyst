@@ -9,7 +9,6 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.10.9
-	github.com/rs/cors v1.11.1
 	google.golang.org/api v0.238.0
 	rsc.io/pdf v0.1.1
 )
