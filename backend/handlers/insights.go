@@ -17,14 +17,12 @@ import (
 )
 
 type LLMService struct {
-	apiKey string
-	db     *sql.DB
+	db *sql.DB
 }
 
 func NewLLMService(db *sql.DB) *LLMService {
 	return &LLMService{
-		apiKey: os.Getenv("GEMINI_API_KEY"),
-		db:     db,
+		db: db,
 	}
 }
 
@@ -56,9 +54,45 @@ type GeminiResponse struct {
 	} `json:"candidates"`
 }
 
+func selectRelevantChunks(chunks []string, question string, maxChars int) string {
+	var selected []string
+	total := 0
+	qWords := strings.Fields(strings.ToLower(question))
+	for _, chunk := range chunks {
+		lowerChunk := strings.ToLower(chunk)
+		for _, word := range qWords {
+			if strings.Contains(lowerChunk, word) && total+len(chunk) <= maxChars {
+				selected = append(selected, chunk)
+				total += len(chunk)
+				break
+			}
+		}
+		if total >= maxChars {
+			break
+		}
+	}
+	// Fallback: if nothing matched, use the first chunk(s)
+	if len(selected) == 0 && len(chunks) > 0 {
+		total = 0
+		for _, chunk := range chunks {
+			if total+len(chunk) > maxChars {
+				break
+			}
+			selected = append(selected, chunk)
+			total += len(chunk)
+		}
+	}
+	return strings.Join(selected, "\n\n")
+}
+
 func (ls *LLMService) GenerateInsight(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userID := ctx.Value("userID").(string)
+	userIDVal := ctx.Value(userIDKey)
+	userID, ok := userIDVal.(string)
+	if !ok || userID == "" {
+		http.Error(w, "Unauthorized: userID missing in context", http.StatusUnauthorized)
+		return
+	}
 	vars := mux.Vars(r)
 	documentID := vars["documentId"]
 
@@ -96,25 +130,29 @@ func (ls *LLMService) GenerateInsight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Combine chunks into context (limit to first few chunks to avoid hitting token limits)
-	context := strings.Join(chunks[:min(5, len(chunks))], "\n\n")
+	// Keyword-based chunk selection
+	context := selectRelevantChunks(chunks, request.Question, 2000)
 
 	// Construct prompt
-	prompt := fmt.Sprintf(`You are a Strategic Insight Analyst. Analyze the following business document and provide insights based on the user's question.
+	prompt := fmt.Sprintf(`You are a Strategic Insight Analyst. Analyze the following business document and answer the user's question.
+
+Instructions:
+- Provide a clear, concise, and well-structured response.
+- Use bullet points or numbered lists for key points.
+- Highlight strategic implications and actionable insights.
+- If the answer is not in the document, state that clearly.
+- Use simple language and avoid jargon.
 
 Document Context:
 %s
 
-User Question: %s
+User Question:
+%s
 
-Instructions:
-1. Provide a concise and analytical response.
-2. Focus on strategic implications and key takeaways.
-3. If the information is not available in the document, state that clearly.
-4. Use bullet points for clarity when appropriate.`, context, request.Question)
+Your Response:`, context, request.Question)
 
-	// Call Gemini API
-	response, err := ls.callGeminiAPI(prompt)
+	// Call Hugging Face API
+	response, err := ls.callHuggingFaceAPI(prompt)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error calling LLM API: %v", err), http.StatusInternalServerError)
 		return
@@ -141,7 +179,12 @@ Instructions:
 
 func (ls *LLMService) ChatWithDocument(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userID := ctx.Value("userID").(string)
+	userIDVal := ctx.Value(userIDKey)
+	userID, ok := userIDVal.(string)
+	if !ok || userID == "" {
+		http.Error(w, "Unauthorized: userID missing in context", http.StatusUnauthorized)
+		return
+	}
 	vars := mux.Vars(r)
 	documentID := vars["documentId"]
 
@@ -179,6 +222,9 @@ func (ls *LLMService) ChatWithDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keyword-based chunk selection
+	context := selectRelevantChunks(chunks, request.Message, 2000)
+
 	// Get previous chat history for context
 	historyRows, err := ls.db.QueryContext(ctx, `
 		SELECT message_type, message_content
@@ -206,31 +252,34 @@ func (ls *LLMService) ChatWithDocument(w http.ResponseWriter, r *http.Request) {
 		chatHistory = append(chatHistory, ChatMessage{Role: role, Content: content})
 	}
 
-	// Combine chunks into context (limit to first few chunks to avoid hitting token limits)
-	context := strings.Join(chunks[:min(5, len(chunks))], "\n\n")
+	// Build chat prompt: context + chat history + user message
+	var chatPrompt strings.Builder
+	chatPrompt.WriteString(`You are a Strategic Insight Analyst. I will provide you with a business document and you will help me analyze it.
 
-	// Construct messages for Gemini
-	messages := []ChatMessage{
-		{
-			Role: "user",
-			Content: fmt.Sprintf(`You are a Strategic Insight Analyst. I will provide you with a business document and you will help me analyze it.
+Instructions:
+- Provide a clear, concise, and well-structured response.
+- Use bullet points or numbered lists for key points.
+- Highlight strategic implications and actionable insights.
+- If the answer is not in the document, state that clearly.
+- Use simple language and avoid jargon.
 
 Document Context:
-%s
-
-Please answer my questions about this document with concise, analytical responses focusing on strategic implications.`, context),
-		},
-		{Role: "model", Content: "Understood. I'll analyze the document and provide strategic insights based on your questions."},
+`)
+	chatPrompt.WriteString(context)
+	chatPrompt.WriteString("\n\n")
+	for _, msg := range chatHistory {
+		if msg.Role == "user" {
+			chatPrompt.WriteString("User: ")
+		} else {
+			chatPrompt.WriteString("AI: ")
+		}
+		chatPrompt.WriteString(msg.Content)
+		chatPrompt.WriteString("\n")
 	}
-
-	// Add chat history
-	messages = append(messages, chatHistory...)
-
-	// Add current message
-	messages = append(messages, ChatMessage{Role: "user", Content: request.Message})
-
-	// Call Gemini API
-	response, err := ls.callGeminiChatAPI(messages)
+	chatPrompt.WriteString("User: ")
+	chatPrompt.WriteString(request.Message)
+	chatPrompt.WriteString("\nAI:")
+	response, err := ls.callHuggingFaceAPI(chatPrompt.String())
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error calling LLM API: %v", err), http.StatusInternalServerError)
 		return
@@ -256,7 +305,12 @@ Please answer my questions about this document with concise, analytical response
 
 func (ls *LLMService) GetChatHistory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userID := ctx.Value("userID").(string)
+	userIDVal := ctx.Value(userIDKey)
+	userID, ok := userIDVal.(string)
+	if !ok || userID == "" {
+		http.Error(w, "Unauthorized: userID missing in context", http.StatusUnauthorized)
+		return
+	}
 	vars := mux.Vars(r)
 	documentID := vars["documentId"]
 
@@ -292,92 +346,46 @@ func (ls *LLMService) GetChatHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(history)
 }
 
-func (ls *LLMService) callGeminiAPI(prompt string) (string, error) {
-	geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + ls.apiKey
-
-	reqBody := GeminiRequest{
-		Contents: []GeminiContent{
-			{
-				Parts: []GeminiPart{
-					{Text: prompt},
-				},
-			},
+func (ls *LLMService) callHuggingFaceAPI(prompt string) (string, error) {
+	hfURL := "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta"
+	apiKey := os.Getenv("HF_API_TOKEN")
+	requestBody := map[string]interface{}{
+		"inputs": prompt,
+		"parameters": map[string]interface{}{
+			"max_new_tokens":   256,
+			"return_full_text": false,
 		},
 	}
-
-	jsonBody, err := json.Marshal(reqBody)
+	jsonBody, err := json.Marshal(requestBody)
 	if err != nil {
 		return "", fmt.Errorf("error marshaling request body: %v", err)
 	}
-
-	resp, err := http.Post(geminiURL, "application/json", bytes.NewBuffer(jsonBody))
+	client := &http.Client{Timeout: 60 * time.Second}
+	req, err := http.NewRequest("POST", hfURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return "", fmt.Errorf("error making request to Gemini API: %v", err)
+		return "", fmt.Errorf("error creating request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("error making request to Hugging Face API: %v", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("Hugging Face API returned status %d: %s", resp.StatusCode, string(body))
 	}
-
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return "", fmt.Errorf("error decoding Gemini response: %v", err)
+	var hfResp []struct {
+		GeneratedText string `json:"generated_text"`
 	}
-
-	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("no content in Gemini response")
+	if err := json.NewDecoder(resp.Body).Decode(&hfResp); err != nil {
+		return "", fmt.Errorf("error decoding Hugging Face response: %v", err)
 	}
-
-	return geminiResp.Candidates[0].Content.Parts[0].Text, nil
-}
-
-func (ls *LLMService) callGeminiChatAPI(messages []ChatMessage) (string, error) {
-	geminiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + ls.apiKey
-
-	// Convert messages to Gemini format
-	var contents []GeminiContent
-
-	for _, msg := range messages {
-		contents = append(contents, GeminiContent{
-			Role: msg.Role,
-			Parts: []GeminiPart{
-				{Text: msg.Content},
-			},
-		})
+	if len(hfResp) == 0 {
+		return "", fmt.Errorf("no content in Hugging Face response")
 	}
-
-	reqBody := GeminiRequest{
-		Contents: contents,
-	}
-
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("error marshaling request body: %v", err)
-	}
-
-	resp, err := http.Post(geminiURL, "application/json", bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return "", fmt.Errorf("error making request to Gemini API: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return "", fmt.Errorf("error decoding Gemini response: %v", err)
-	}
-
-	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("no content in Gemini response")
-	}
-
-	return geminiResp.Candidates[0].Content.Parts[0].Text, nil
+	return hfResp[0].GeneratedText, nil
 }
 
 func min(a, b int) int {

@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "strategicinsightanalyst-464007",
+  "private_key_id": "326f3442f71b7e8937f0c1f80c3312556610fcc6",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC5XOv6m2MCBQoF\nPcmAa0UD1o3+QgAOCbCUu6drFk7lLcRe7d1akvkDVoRf+Xtj/ql39BMvWgvOnDO8\nb4JbS/EVRW+X/Lh5LtLBJ2SKlGL4zzOpUA/pmXo7wm+d5epoyJpPXmoxfpUCUTzv\nFJhAzjzQlBO+uDKPoOPkgmfPOju0H55lOt6NQBDTbk4NaVexdyComRQTQM2Fo7Ul\ng4jG67Inylm76SM5bUnxYexQs7Sy1BUZu89kecBn2uZ4R6ZMHqip9SjgcS4/XsyI\ntpJ11HyKMxz/3mCpBfvG7agOM4E9QiLYd0WBksfo/O0nvJ2qLHhDO3pteSn2c+xl\ng4VnMKBvAgMBAAECggEAVyv8bCBMSQReqIVcsHCCBeKOZ17ZkMB80w2HF+TnWH8U\nBQK/IRvSUIANA+ebYDTAtQFLTm79833hFMKqHs5Rg8viRatbg94BzkV80nEjNFiZ\nNoxI13ZOljED9dFM0ldYvm+r6Dfb0rmqutLIIV38GqkwufX9DS/ATNQJBtsffb69\nBbGiWjG36Am6a9gkous2GZxYU/JJ0xCI6MCpz6ruwavuUB6LTL8cogjoiFC0TD0p\norpeVaX0tGjPs8usx11AH3PUPzfZ7i6jkD3anpDZVugXBkDlhL9RzccmEqDejEvA\njS1LytBDT5s6hBhVTVLyRTM8D+tjfB43ki6kiMZBXQKBgQDwfF/+zhpKG/BFDe6y\nbSEdVkJbgzS6pAiURRVuyeDNTjeQYwcBLhGcq9MTL8CQzJad4FotzFjLpfCea1qG\nisSxolzKBYZR3u6hyqEUcBap8i3TuIxlUUn4uwMVIdnweOfv0GJpThkdNbr+/s5y\nJlS5OoW/5GycEI5uxOieRzODawKBgQDFUjFA575LCTHbBMPylZV+HgKpwjlE/Dln\nC3OEQCRPuXGP30+4kgF/dCar91zuQjf8FQNH8hthNT3tfd/bxe+pr2eqa4fv+Y2m\n27mk14ja47pMfo+em35GpCoZxX1vJo23JVIH+C94ktnJYsWELpUFpcqyBB8vkJ6c\n2d7BCancDQKBgQCnOoXyhVXItRbmniKflr2RTfuE8X9ITmrc2BFoYh/eBIck84fa\nbTO4E9AKpoks5+fQz0NGV7RjoPfq4dIofvT6ZWJK5X6bDgA5J9PNh4hrE0qE0O9o\nQRfETB9/oXORAjKfE/RrL/DM3CE10vCydi8yQxzg7LIN8IFrS6hK8E5FEwKBgB1L\noKhkP6pgSRidUoI3lyRMTFTr0xjc4aDc4F+oLjvv6l5T50Ad3T8Q/ZTWeuOczTcN\n35jU5x+9id4yrAOzFWv58MgqgtosEM3PHXbN0TG+UbB9sdD4gPz37pA48/CGps+k\nKNOqE1Ixa0gs8+o2CEX4YWmglwi2zfW3mwzJ5IAZAoGBAIepBXPv5XH5pNfktVMR\njLwLwp9z5PdT0x6N2RWtORax2pAviSOTwCSpvZtEpRaRlWNYnHeCveg81M4o9Lm5\n99uzJ+TyJ0nP3AMV4xRS+LMrnzlQLaqqXVwd8vhStqE+T71sz2pmI789Oz9VWHfR\nyhMDgoIj4yWPz3W6pyO+0SZA\n-----END PRIVATE KEY-----\n",
+  "client_email": "vertex-gemini-access@strategicinsightanalyst-464007.iam.gserviceaccount.com",
+  "client_id": "110720422346941762430",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/vertex-gemini-access%40strategicinsightanalyst-464007.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

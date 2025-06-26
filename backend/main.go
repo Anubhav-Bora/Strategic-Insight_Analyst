@@ -52,7 +52,7 @@ func main() {
 	// 🤖 LLM routes
 	api.HandleFunc("/documents/{documentId}/insights", llmService.GenerateInsight).Methods("POST")
 	api.HandleFunc("/documents/{documentId}/chat", llmService.ChatWithDocument).Methods("POST")
-	api.HandleFunc("/documents/{documentId}/chat", llmService.GetChatHistory).Methods("GET")
+	api.HandleFunc("/documents/{documentId}/chat/history", llmService.GetChatHistory).Methods("GET")
 
 	// 🚀 Start server
 	port := os.Getenv("PORT")
