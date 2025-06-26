@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -21,9 +22,7 @@ type LLMService struct {
 }
 
 func NewLLMService(db *sql.DB) *LLMService {
-	return &LLMService{
-		db: db,
-	}
+	return &LLMService{db: db}
 }
 
 type ChatMessage struct {
@@ -31,27 +30,11 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
-type GeminiRequest struct {
-	Contents []GeminiContent `json:"contents"`
-}
-
-type GeminiContent struct {
-	Role  string       `json:"role,omitempty"`
-	Parts []GeminiPart `json:"parts"`
-}
-
-type GeminiPart struct {
-	Text string `json:"text"`
-}
-
-type GeminiResponse struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
+type ChatHistoryItem struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 func selectRelevantChunks(chunks []string, question string, maxChars int) string {
@@ -71,7 +54,6 @@ func selectRelevantChunks(chunks []string, question string, maxChars int) string
 			break
 		}
 	}
-	// Fallback: if nothing matched, use the first chunk(s)
 	if len(selected) == 0 && len(chunks) > 0 {
 		total = 0
 		for _, chunk := range chunks {
@@ -85,33 +67,13 @@ func selectRelevantChunks(chunks []string, question string, maxChars int) string
 	return strings.Join(selected, "\n\n")
 }
 
-func (ls *LLMService) GenerateInsight(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	userIDVal := ctx.Value(userIDKey)
-	userID, ok := userIDVal.(string)
-	if !ok || userID == "" {
-		http.Error(w, "Unauthorized: userID missing in context", http.StatusUnauthorized)
-		return
-	}
-	vars := mux.Vars(r)
-	documentID := vars["documentId"]
-
-	var request struct {
-		Question string `json:"question"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	// Get document chunks from database
+func (ls *LLMService) getChunks(ctx context.Context, documentID string) ([]string, error) {
 	rows, err := ls.db.QueryContext(ctx, `
 		SELECT content FROM document_chunks
 		WHERE document_id = $1
 		ORDER BY chunk_index`, documentID)
 	if err != nil {
-		http.Error(w, "Error retrieving document chunks", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -119,21 +81,85 @@ func (ls *LLMService) GenerateInsight(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var chunk string
 		if err := rows.Scan(&chunk); err != nil {
-			http.Error(w, "Error scanning document chunk", http.StatusInternalServerError)
-			return
+			return nil, err
 		}
 		chunks = append(chunks, chunk)
 	}
+	return chunks, nil
+}
 
-	if len(chunks) == 0 {
-		http.Error(w, "No document content found", http.StatusNotFound)
+func (ls *LLMService) getChatHistory(ctx context.Context, documentID, userID string) ([]ChatMessage, error) {
+	rows, err := ls.db.QueryContext(ctx, `
+		SELECT message_type, message_content
+		FROM chat_history
+		WHERE document_id = $1 AND user_id = $2
+		ORDER BY timestamp
+		LIMIT 10`, documentID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var history []ChatMessage
+	for rows.Next() {
+		var msgType, content string
+		if err := rows.Scan(&msgType, &content); err != nil {
+			return nil, err
+		}
+		role := "user"
+		if msgType == "ai" {
+			role = "model"
+		}
+		history = append(history, ChatMessage{Role: role, Content: content})
+	}
+	return history, nil
+}
+
+func (ls *LLMService) saveChat(ctx context.Context, documentID, userID, userMsg, aiMsg string) {
+	_, err := ls.db.ExecContext(ctx, `
+		INSERT INTO chat_history (id, document_id, user_id, message_type, message_content)
+		VALUES ($1, $2, $3, 'user', $4),
+		       ($5, $6, $7, 'ai', $8)`,
+		uuid.New().String(), documentID, userID, userMsg,
+		uuid.New().String(), documentID, userID, aiMsg)
+	if err != nil {
+		log.Printf("Warning: failed to save chat history: %v", err)
+	}
+}
+
+func getUserID(ctx context.Context) (string, error) {
+	userIDVal := ctx.Value(userIDKey)
+	userID, ok := userIDVal.(string)
+	if !ok || userID == "" {
+		return "", fmt.Errorf("userID missing in context")
+	}
+	return userID, nil
+}
+
+func (ls *LLMService) GenerateInsight(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	userID, err := getUserID(ctx)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	documentID := mux.Vars(r)["documentId"]
+
+	var req struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Keyword-based chunk selection
-	context := selectRelevantChunks(chunks, request.Question, 2000)
+	chunks, err := ls.getChunks(ctx, documentID)
+	if err != nil || len(chunks) == 0 {
+		http.Error(w, "Failed to retrieve document", http.StatusInternalServerError)
+		return
+	}
+	contextText := selectRelevantChunks(chunks, req.Question, 2000)
 
-	// Construct prompt
 	prompt := fmt.Sprintf(`You are a Strategic Insight Analyst. Analyze the following business document and answer the user's question.
 
 Instructions:
@@ -149,112 +175,52 @@ Document Context:
 User Question:
 %s
 
-Your Response:`, context, request.Question)
+Your Response:`, contextText, req.Question)
 
-	// Call Hugging Face API
 	response, err := ls.callHuggingFaceAPI(prompt)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error calling LLM API: %v", err), http.StatusInternalServerError)
+		http.Error(w, "LLM API error", http.StatusInternalServerError)
 		return
 	}
 
-	// Save to chat history
-	chatID := uuid.New().String()
-	_, err = ls.db.ExecContext(ctx, `
-		INSERT INTO chat_history (id, document_id, user_id, message_type, message_content)
-		VALUES ($1, $2, $3, 'user', $4),
-		       ($5, $6, $7, 'ai', $8)`,
-		uuid.New().String(), documentID, userID, request.Question,
-		chatID, documentID, userID, response)
-	if err != nil {
-		log.Printf("Warning: failed to save chat history: %v", err)
-	}
+	ls.saveChat(ctx, documentID, userID, req.Question, response)
 
-	// Return response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"response": response,
-	})
+	json.NewEncoder(w).Encode(map[string]string{"response": response})
 }
 
 func (ls *LLMService) ChatWithDocument(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userIDVal := ctx.Value(userIDKey)
-	userID, ok := userIDVal.(string)
-	if !ok || userID == "" {
-		http.Error(w, "Unauthorized: userID missing in context", http.StatusUnauthorized)
+	userID, err := getUserID(ctx)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	vars := mux.Vars(r)
-	documentID := vars["documentId"]
+	documentID := mux.Vars(r)["documentId"]
 
-	var request struct {
+	var req struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Get document chunks from database
-	rows, err := ls.db.QueryContext(ctx, `
-		SELECT content FROM document_chunks
-		WHERE document_id = $1
-		ORDER BY chunk_index`, documentID)
+	chunks, err := ls.getChunks(ctx, documentID)
+	if err != nil || len(chunks) == 0 {
+		http.Error(w, "Failed to retrieve document", http.StatusInternalServerError)
+		return
+	}
+	contextText := selectRelevantChunks(chunks, req.Message, 2000)
+
+	history, err := ls.getChatHistory(ctx, documentID, userID)
 	if err != nil {
-		http.Error(w, "Error retrieving document chunks", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var chunks []string
-	for rows.Next() {
-		var chunk string
-		if err := rows.Scan(&chunk); err != nil {
-			http.Error(w, "Error scanning document chunk", http.StatusInternalServerError)
-			return
-		}
-		chunks = append(chunks, chunk)
-	}
-
-	if len(chunks) == 0 {
-		http.Error(w, "No document content found", http.StatusNotFound)
+		http.Error(w, "Chat history error", http.StatusInternalServerError)
 		return
 	}
 
-	// Keyword-based chunk selection
-	context := selectRelevantChunks(chunks, request.Message, 2000)
-
-	// Get previous chat history for context
-	historyRows, err := ls.db.QueryContext(ctx, `
-		SELECT message_type, message_content
-		FROM chat_history
-		WHERE document_id = $1 AND user_id = $2
-		ORDER BY timestamp
-		LIMIT 10`, documentID, userID)
-	if err != nil {
-		http.Error(w, "Error retrieving chat history", http.StatusInternalServerError)
-		return
-	}
-	defer historyRows.Close()
-
-	var chatHistory []ChatMessage
-	for historyRows.Next() {
-		var msgType, content string
-		if err := historyRows.Scan(&msgType, &content); err != nil {
-			http.Error(w, "Error scanning chat history", http.StatusInternalServerError)
-			return
-		}
-		role := "user"
-		if msgType == "ai" {
-			role = "model"
-		}
-		chatHistory = append(chatHistory, ChatMessage{Role: role, Content: content})
-	}
-
-	// Build chat prompt: context + chat history + user message
-	var chatPrompt strings.Builder
-	chatPrompt.WriteString(`You are a Strategic Insight Analyst. I will provide you with a business document and you will help me analyze it.
+	var prompt strings.Builder
+	prompt.WriteString(`You are a Strategic Insight Analyst. I will provide you with a business document and you will help me analyze it.
 
 Instructions:
 - Provide a clear, concise, and well-structured response.
@@ -265,54 +231,36 @@ Instructions:
 
 Document Context:
 `)
-	chatPrompt.WriteString(context)
-	chatPrompt.WriteString("\n\n")
-	for _, msg := range chatHistory {
-		if msg.Role == "user" {
-			chatPrompt.WriteString("User: ")
-		} else {
-			chatPrompt.WriteString("AI: ")
+	prompt.WriteString(contextText + "\n\n")
+	for _, msg := range history {
+		prefix := "User: "
+		if msg.Role == "model" {
+			prefix = "AI: "
 		}
-		chatPrompt.WriteString(msg.Content)
-		chatPrompt.WriteString("\n")
+		prompt.WriteString(prefix + msg.Content + "\n")
 	}
-	chatPrompt.WriteString("User: ")
-	chatPrompt.WriteString(request.Message)
-	chatPrompt.WriteString("\nAI:")
-	response, err := ls.callHuggingFaceAPI(chatPrompt.String())
+	prompt.WriteString("User: " + req.Message + "\nAI:")
+
+	response, err := ls.callHuggingFaceAPI(prompt.String())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error calling LLM API: %v", err), http.StatusInternalServerError)
+		http.Error(w, "LLM API error", http.StatusInternalServerError)
 		return
 	}
 
-	// Save to chat history
-	_, err = ls.db.ExecContext(ctx, `
-		INSERT INTO chat_history (id, document_id, user_id, message_type, message_content)
-		VALUES ($1, $2, $3, 'user', $4),
-		       ($5, $6, $7, 'ai', $8)`,
-		uuid.New().String(), documentID, userID, request.Message,
-		uuid.New().String(), documentID, userID, response)
-	if err != nil {
-		log.Printf("Warning: failed to save chat history: %v", err)
-	}
+	ls.saveChat(ctx, documentID, userID, req.Message, response)
 
-	// Return response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"response": response,
-	})
+	json.NewEncoder(w).Encode(map[string]string{"response": response})
 }
 
 func (ls *LLMService) GetChatHistory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userIDVal := ctx.Value(userIDKey)
-	userID, ok := userIDVal.(string)
-	if !ok || userID == "" {
-		http.Error(w, "Unauthorized: userID missing in context", http.StatusUnauthorized)
+	userID, err := getUserID(ctx)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	vars := mux.Vars(r)
-	documentID := vars["documentId"]
+	documentID := mux.Vars(r)["documentId"]
 
 	rows, err := ls.db.QueryContext(ctx, `
 		SELECT id, message_type, message_content, timestamp
@@ -325,18 +273,11 @@ func (ls *LLMService) GetChatHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	type ChatHistoryItem struct {
-		ID        string    `json:"id"`
-		Type      string    `json:"type"`
-		Content   string    `json:"content"`
-		Timestamp time.Time `json:"timestamp"`
-	}
-
 	var history []ChatHistoryItem
 	for rows.Next() {
 		var item ChatHistoryItem
 		if err := rows.Scan(&item.ID, &item.Type, &item.Content, &item.Timestamp); err != nil {
-			http.Error(w, "Error scanning chat history item", http.StatusInternalServerError)
+			http.Error(w, "Error scanning chat history", http.StatusInternalServerError)
 			return
 		}
 		history = append(history, item)
@@ -349,48 +290,45 @@ func (ls *LLMService) GetChatHistory(w http.ResponseWriter, r *http.Request) {
 func (ls *LLMService) callHuggingFaceAPI(prompt string) (string, error) {
 	hfURL := "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta"
 	apiKey := os.Getenv("HF_API_TOKEN")
-	requestBody := map[string]interface{}{
+
+	body, err := json.Marshal(map[string]interface{}{
 		"inputs": prompt,
 		"parameters": map[string]interface{}{
 			"max_new_tokens":   256,
 			"return_full_text": false,
 		},
-	}
-	jsonBody, err := json.Marshal(requestBody)
+	})
 	if err != nil {
-		return "", fmt.Errorf("error marshaling request body: %v", err)
+		return "", fmt.Errorf("marshal error: %v", err)
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
-	req, err := http.NewRequest("POST", hfURL, bytes.NewBuffer(jsonBody))
+
+	req, err := http.NewRequest("POST", hfURL, bytes.NewBuffer(body))
 	if err != nil {
-		return "", fmt.Errorf("error creating request: %v", err)
+		return "", fmt.Errorf("request error: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("error making request to Hugging Face API: %v", err)
+		return "", fmt.Errorf("API call error: %v", err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Hugging Face API returned status %d: %s", resp.StatusCode, string(body))
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HuggingFace error %d: %s", resp.StatusCode, string(b))
 	}
+
 	var hfResp []struct {
 		GeneratedText string `json:"generated_text"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&hfResp); err != nil {
-		return "", fmt.Errorf("error decoding Hugging Face response: %v", err)
+		return "", fmt.Errorf("decode error: %v", err)
 	}
 	if len(hfResp) == 0 {
-		return "", fmt.Errorf("no content in Hugging Face response")
+		return "", fmt.Errorf("no content in response")
 	}
 	return hfResp[0].GeneratedText, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

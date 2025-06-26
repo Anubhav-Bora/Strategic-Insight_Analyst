@@ -13,52 +13,43 @@ import (
 )
 
 func main() {
-	// 🔐 Load environment variables from .env
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("❌ Error loading .env file")
+		log.Fatal("Error loading .env file")
 	}
 
 	utils.LoadConfig()
 
-	// 🛢️ Initialize Neon DB
 	db, err := utils.InitDB()
 	if err != nil {
-		log.Fatalf("❌ Failed to connect to Neon: %v", err)
+		log.Fatalf("Failed to connect to Neon: %v", err)
 	}
 	defer db.Close()
 
-	// 🔥 Initialize Firebase
 	firebaseApp, err := utils.InitFirebase()
 	if err != nil {
-		log.Fatalf("❌ Firebase init failed: %v", err)
+		log.Fatalf("Firebase init failed: %v", err)
 	}
 
-	// 🚀 Initialize services
 	documentService := handlers.NewDocumentService(db)
 	llmService := handlers.NewLLMService(db)
 
-	// 🌐 Router setup
 	r := mux.NewRouter()
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(handlers.AuthMiddleware(firebaseApp, db))
 
-	// 📄 Document routes
 	api.HandleFunc("/documents", documentService.UploadDocument).Methods("POST")
 	api.HandleFunc("/documents", documentService.ListDocuments).Methods("GET")
 	api.HandleFunc("/documents/{id}", documentService.GetDocument).Methods("GET")
 	api.HandleFunc("/documents/{id}", documentService.DeleteDocument).Methods("DELETE")
-
-	// 🤖 LLM routes
 	api.HandleFunc("/documents/{documentId}/insights", llmService.GenerateInsight).Methods("POST")
 	api.HandleFunc("/documents/{documentId}/chat", llmService.ChatWithDocument).Methods("POST")
 	api.HandleFunc("/documents/{documentId}/chat/history", llmService.GetChatHistory).Methods("GET")
 
-	// 🚀 Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("🚀 Server running on port %s", port)
+	log.Printf("Server running on port %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, cors.Default().Handler(r)))
 }
