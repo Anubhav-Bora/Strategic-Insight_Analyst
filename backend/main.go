@@ -9,8 +9,21 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-	"github.com/rs/cors"
 )
+
+func withCORS(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
 
 func main() {
 	err := godotenv.Load()
@@ -51,5 +64,5 @@ func main() {
 		port = "8080"
 	}
 	log.Printf("Server running on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, cors.Default().Handler(r)))
+	log.Fatal(http.ListenAndServe(":"+port, withCORS(r)))
 }
