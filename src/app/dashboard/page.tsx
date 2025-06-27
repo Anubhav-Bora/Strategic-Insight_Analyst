@@ -101,6 +101,14 @@ export default function DashboardPage() {
             </Link>
           </motion.div>
         </div>
+        <motion.div
+          className="mb-2"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.35 }}
+        >
+          <p className="text-xs text-blue-700 dark:text-blue-300 italic">Prefer to upload in text format for best results.</p>
+        </motion.div>
       </motion.div>
 
       {/* Stats Cards */}
