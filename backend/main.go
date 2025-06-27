@@ -48,6 +48,8 @@ func main() {
 	llmService := handlers.NewLLMService(db)
 
 	r := mux.NewRouter()
+	// Register endpoint (no auth)
+	r.HandleFunc("/api/register", handlers.RegisterHandler(db)).Methods("POST")
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(handlers.AuthMiddleware(firebaseApp, db))
 

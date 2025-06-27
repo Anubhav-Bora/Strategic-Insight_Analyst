@@ -118,12 +118,17 @@ func (ls *LLMService) getChatHistory(ctx context.Context, documentID, userID str
 func (ls *LLMService) saveChat(ctx context.Context, documentID, userID, userMsg, aiMsg string) {
 	_, err := ls.db.ExecContext(ctx, `
 		INSERT INTO chat_history (id, document_id, user_id, message_type, message_content)
-		VALUES ($1, $2, $3, 'user', $4),
-		       ($5, $6, $7, 'ai', $8)`,
-		uuid.New().String(), documentID, userID, userMsg,
+		VALUES ($1, $2, $3, 'user', $4)`,
+		uuid.New().String(), documentID, userID, userMsg)
+	if err != nil {
+		log.Printf("Warning: failed to save user chat message: %v", err)
+	}
+	_, err = ls.db.ExecContext(ctx, `
+		INSERT INTO chat_history (id, document_id, user_id, message_type, message_content)
+		VALUES ($1, $2, $3, 'ai', $4)`,
 		uuid.New().String(), documentID, userID, aiMsg)
 	if err != nil {
-		log.Printf("Warning: failed to save chat history: %v", err)
+		log.Printf("Warning: failed to save ai chat message: %v", err)
 	}
 }
 

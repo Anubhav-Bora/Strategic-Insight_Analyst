@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -52,6 +55,7 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Unauthorized: userID missing in context", http.StatusUnauthorized)
 		return
 	}
+	log.Printf("UploadDocument: userID=%s", userID)
 
 	err := r.ParseMultipartForm(10 << 20)
 	if err != nil {
@@ -123,6 +127,24 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 	docID := uuid.New().String()
 	uploadedAt := time.Now()
 
+	// Log the extracted text for debugging
+	log.Printf("[EXTRACTED TEXT] docID=%s, userID=%s, fileName=%s, text=%.500s", docID, userID, handler.Filename, textContent)
+
+	// Heuristic: warn if text looks garbled (lots of non-ASCII or uppercase runs)
+	garbled := false
+	asciiCount := 0
+	for _, r := range textContent {
+		if r >= 32 && r <= 126 {
+			asciiCount++
+		}
+	}
+	if len(textContent) > 0 && (asciiCount < len(textContent)/2) {
+		garbled = true
+	}
+	if garbled {
+		log.Printf("[WARNING] Extracted text may be garbled for docID=%s, fileName=%s", docID, handler.Filename)
+	}
+
 	// Store Supabase path in DB
 	_, err = ds.db.ExecContext(ctx, `
 		INSERT INTO documents (id, user_id, file_name, storage_path, uploaded_at)
@@ -142,11 +164,14 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// Construct public URL for Supabase storage
+	publicUrl := fmt.Sprintf("%s/storage/v1/object/public/%s/%s", supabaseURL, supabaseBucket, uploadPath)
+
 	response := Document{
 		ID:         docID,
 		UserID:     userID,
 		FileName:   handler.Filename,
-		StorageURL: uploadPath,
+		StorageURL: publicUrl,
 		UploadedAt: uploadedAt,
 	}
 
@@ -178,20 +203,96 @@ func (ds *DocumentService) saveDocumentChunks(ctx context.Context, documentID st
 }
 
 func extractTextFromPDF(filePath string) (string, error) {
+	// Try OCR.space first
+	apiKey := os.Getenv("OCR_SPACE_API_KEY")
+	if apiKey != "" {
+		ocrText, ocrErr := extractTextWithOCRSpace(filePath, apiKey)
+		if ocrErr == nil && len(ocrText) > 0 {
+			return ocrText, nil
+		}
+	}
+	// Fallback to pdftotext
+	txtPath := filePath + ".txt"
+	cmd := exec.Command("pdftotext", filePath, txtPath)
+	err := cmd.Run()
+	if err == nil {
+		defer os.Remove(txtPath)
+		data, readErr := ioutil.ReadFile(txtPath)
+		if readErr == nil && len(data) > 0 {
+			return string(data), nil
+		}
+	}
+	// Fallback to rsc.io/pdf
 	f, err := pdf.Open(filePath)
+	if err == nil {
+		var text string
+		for i := 1; i <= f.NumPage(); i++ {
+			page := f.Page(i)
+			content := page.Content()
+			for _, txt := range content.Text {
+				text += txt.S + " "
+			}
+			text += "\n"
+		}
+		if len(text) > 20 {
+			return text, nil
+		}
+	}
+	return "", fmt.Errorf("Failed to extract text from PDF")
+}
+
+// extractTextWithOCRSpace uses the OCR.space API to extract text from a PDF file
+func extractTextWithOCRSpace(pdfPath, apiKey string) (string, error) {
+	file, err := os.Open(pdfPath)
 	if err != nil {
 		return "", err
 	}
-	var text string
-	for i := 1; i <= f.NumPage(); i++ {
-		page := f.Page(i)
-		content := page.Content()
-		for _, txt := range content.Text {
-			text += txt.S + " "
-		}
-		text += "\n"
+	defer file.Close()
+
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	fw, err := w.CreateFormFile("file", pdfPath)
+	if err != nil {
+		return "", err
 	}
-	return text, nil
+	if _, err = io.Copy(fw, file); err != nil {
+		return "", err
+	}
+	w.WriteField("language", "eng")
+	w.WriteField("isOverlayRequired", "false")
+	w.WriteField("OCREngine", "2")
+	w.Close()
+
+	req, err := http.NewRequest("POST", "https://api.ocr.space/parse/image", &b)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("apikey", apiKey)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		ParsedResults []struct {
+			ParsedText string `json:"ParsedText"`
+		} `json:"ParsedResults"`
+		IsErroredOnProcessing bool   `json:"IsErroredOnProcessing"`
+		ErrorMessage          string `json:"ErrorMessage"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if result.IsErroredOnProcessing {
+		return "", fmt.Errorf("OCR.space error: %s", result.ErrorMessage)
+	}
+	if len(result.ParsedResults) == 0 {
+		return "", fmt.Errorf("No text extracted")
+	}
+	return result.ParsedResults[0].ParsedText, nil
 }
 
 func (ds *DocumentService) ListDocuments(w http.ResponseWriter, r *http.Request) {
@@ -240,6 +341,8 @@ func (ds *DocumentService) GetDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	docID := mux.Vars(r)["id"]
+	log.Printf("GetDocument: docID=%s, userID=%s", docID, userID)
+
 	var doc Document
 
 	err := ds.db.QueryRowContext(ctx, `
@@ -271,6 +374,7 @@ func (ds *DocumentService) DeleteDocument(w http.ResponseWriter, r *http.Request
 	}
 
 	docID := mux.Vars(r)["id"]
+	log.Printf("DeleteDocument: docID=%s, userID=%s", docID, userID)
 
 	var storagePath string
 	err := ds.db.QueryRowContext(ctx, `

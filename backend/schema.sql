@@ -11,7 +11,7 @@ CREATE TABLE documents (
     user_id VARCHAR(255) NOT NULL,
     file_name VARCHAR(255) NOT NULL,
     storage_path VARCHAR(255) NOT NULL, -- Path to the original file in GCS
-    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -32,7 +32,7 @@ CREATE TABLE chat_history (
     id VARCHAR(255) PRIMARY KEY, -- Unique ID for the chat message
     document_id VARCHAR(255) NOT NULL,
     user_id VARCHAR(255) NOT NULL,
-    message_type ENUM('user', 'ai') NOT NULL, -- 'user' for query, 'ai' for response
+    message_type VARCHAR(10) NOT NULL CHECK (message_type IN ('user', 'ai')), -- 'user' for query, 'ai' for response
     message_content TEXT NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
