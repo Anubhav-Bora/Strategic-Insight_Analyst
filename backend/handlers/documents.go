@@ -73,14 +73,12 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 	fileExt := filepath.Ext(handler.Filename)
 	newFileName := uuid.New().String() + fileExt
 
-	// Read file into buffer
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, file); err != nil {
 		http.Error(w, "Unable to read file", http.StatusInternalServerError)
 		return
 	}
 
-	// Upload to Supabase Storage
 	client := storage.NewClient(supabaseURL+"/storage/v1", supabaseKey, nil)
 	uploadPath := "documents/" + newFileName
 
@@ -91,7 +89,6 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Download the file from Supabase Storage
 	downloaded, err := client.DownloadFile(supabaseBucket, uploadPath)
 	if err != nil {
 		log.Printf("Supabase download error: %v", err)
@@ -101,7 +98,7 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 
 	var textContent string
 	if fileExt == ".pdf" {
-		// Save the downloaded file to a temp file for PDF processing
+
 		tmpFile, err := os.CreateTemp("", "*.pdf")
 		if err != nil {
 			http.Error(w, "Failed to create temp file", http.StatusInternalServerError)
@@ -119,7 +116,7 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 			return
 		}
 	} else if fileExt == ".txt" {
-		// Read the text file directly from the downloaded bytes
+
 		textContent = string(downloaded)
 	}
 	textContent = strings.ReplaceAll(textContent, "\x00", "")
@@ -127,10 +124,6 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 	docID := uuid.New().String()
 	uploadedAt := time.Now()
 
-	// Log the extracted text for debugging
-	log.Printf("[EXTRACTED TEXT] docID=%s, userID=%s, fileName=%s, text=%.500s", docID, userID, handler.Filename, textContent)
-
-	// Heuristic: warn if text looks garbled (lots of non-ASCII or uppercase runs)
 	garbled := false
 	asciiCount := 0
 	for _, r := range textContent {
@@ -145,7 +138,6 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 		log.Printf("[WARNING] Extracted text may be garbled for docID=%s, fileName=%s", docID, handler.Filename)
 	}
 
-	// Store Supabase path in DB
 	_, err = ds.db.ExecContext(ctx, `
 		INSERT INTO documents (id, user_id, file_name, storage_path, uploaded_at)
 		VALUES ($1, $2, $3, $4, $5)`,
@@ -164,7 +156,6 @@ func (ds *DocumentService) UploadDocument(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Construct public URL for Supabase storage
 	publicUrl := fmt.Sprintf("%s/storage/v1/object/public/%s/%s", supabaseURL, supabaseBucket, uploadPath)
 
 	response := Document{
@@ -203,7 +194,7 @@ func (ds *DocumentService) saveDocumentChunks(ctx context.Context, documentID st
 }
 
 func extractTextFromPDF(filePath string) (string, error) {
-	// Try OCR.space first
+
 	apiKey := os.Getenv("OCR_SPACE_API_KEY")
 	if apiKey != "" {
 		ocrText, ocrErr := extractTextWithOCRSpace(filePath, apiKey)
@@ -211,7 +202,7 @@ func extractTextFromPDF(filePath string) (string, error) {
 			return ocrText, nil
 		}
 	}
-	// Fallback to pdftotext
+
 	txtPath := filePath + ".txt"
 	cmd := exec.Command("pdftotext", filePath, txtPath)
 	err := cmd.Run()
@@ -222,7 +213,7 @@ func extractTextFromPDF(filePath string) (string, error) {
 			return string(data), nil
 		}
 	}
-	// Fallback to rsc.io/pdf
+
 	f, err := pdf.Open(filePath)
 	if err == nil {
 		var text string
@@ -241,7 +232,6 @@ func extractTextFromPDF(filePath string) (string, error) {
 	return "", fmt.Errorf("Failed to extract text from PDF")
 }
 
-// extractTextWithOCRSpace uses the OCR.space API to extract text from a PDF file
 func extractTextWithOCRSpace(pdfPath, apiKey string) (string, error) {
 	file, err := os.Open(pdfPath)
 	if err != nil {

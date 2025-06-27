@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"strategic-insight-analyst/utils" // Replace with your actual path
+	"strategic-insight-analyst/utils" 
 
 	firebase "firebase.google.com/go/v4"
 )
@@ -63,7 +63,7 @@ func AuthMiddleware(app *firebase.App, db *sql.DB) func(http.Handler) http.Handl
 	}
 }
 
-// RegisterHandler handles user registration from the frontend
+
 func RegisterHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
